@@ -43,6 +43,7 @@
 #include "sds.h"
 #include "async.h"
 #include "win32.h"
+#include "rdma.h"
 
 extern int redisContextUpdateConnectTimeout(redisContext *c, const struct timeval *timeout);
 extern int redisContextUpdateCommandTimeout(redisContext *c, const struct timeval *timeout);
@@ -713,7 +714,11 @@ static redisContext *redisContextInit(void) {
 void redisFree(redisContext *c) {
     if (c == NULL)
         return;
-    redisNetClose(c);
+    if (c->funcs->close) {
+        c->funcs->close(c);
+    } else {
+        redisNetClose(c);
+    }
 
     hi_sdsfree(c->obuf);
     redisReaderFree(c->reader);
@@ -824,6 +829,11 @@ redisContext *redisConnectWithOptions(const redisOptions *options) {
     } else if (options->type == REDIS_CONN_USERFD) {
         c->fd = options->endpoint.fd;
         c->flags |= REDIS_CONNECTED;
+    } else if (options->type == REDIS_CONN_RDMA) {
+        if (redisContextConnectRdma(c, options->endpoint.tcp.ip, options->endpoint.tcp.port,
+                                    options->connect_timeout)) {
+            return c; /* error should be already saved in c */
+        }
     } else {
         // Unknown type - FIXME - FREE
         return NULL;
@@ -904,6 +914,19 @@ redisContext *redisConnectFd(redisFD fd) {
     return redisConnectWithOptions(&options);
 }
 
+redisContext *redisConnectRdma(const char *ip, int port) {
+    redisOptions options = {0};
+    REDIS_OPTIONS_SET_RDMA(&options, ip, port);
+    return redisConnectWithOptions(&options);
+}
+
+redisContext *redisConnectRdmaTimeout(const char *ip, int port, const struct timeval tv) {
+    redisOptions options = {0};
+    REDIS_OPTIONS_SET_RDMA(&options, ip, port);
+    options.connect_timeout = &tv;
+    return redisConnectWithOptions(&options);
+}
+
 /* Set read/write timeout on a blocking socket. */
 int redisSetTimeout(redisContext *c, const struct timeval tv) {
     if (c->flags & REDIS_BLOCK)
@@ -948,6 +971,7 @@ int redisBufferRead(redisContext *c) {
     } else if (nread < 0) {
         return REDIS_ERR;
     }
+    // printf("redisBufferRead: nread=%d\n", nread);
     return REDIS_OK;
 }
 
@@ -967,6 +991,7 @@ int redisBufferWrite(redisContext *c, int *done) {
         return REDIS_ERR;
 
     if (hi_sdslen(c->obuf) > 0) {
+        // note: this write will be overloaded in different network types
         ssize_t nwritten = c->funcs->write(c);
         if (nwritten < 0) {
             return REDIS_ERR;

@@ -1242,6 +1242,32 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 }
 
+void acceptRdmaHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    serverLog(LL_VERBOSE, "trigger RDMA accept handler\n");
+    int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
+    char cip[NET_IP_STR_LEN];
+    void *connpriv = NULL;
+    UNUSED(el);
+    UNUSED(mask);
+    UNUSED(privdata);
+
+    while(max--) {
+        cfd = rdmaAccept(server.neterr, fd, cip, sizeof(cip), &cport, &connpriv);
+        if (cfd == ANET_ERR) {
+            if (errno != EWOULDBLOCK)
+                serverLog(LL_WARNING,
+                    "RDMA Accepting client connection: %s", server.neterr);
+            return;
+        } else if (cfd == ANET_OK)
+            continue;
+
+        // will not use file descriptor for each connection
+        // anetCloexec(cfd);
+        serverLog(LL_VERBOSE,"RDMA Accepted %s:%d", cip, cport);
+        acceptCommonHandler(connCreateAcceptedRdma(cfd, connpriv), 0, cip);
+    }
+}
+
 void freeClientOriginalArgv(client *c) {
     /* We didn't rewrite this client */
     if (!c->original_argv) return;
@@ -1329,6 +1355,7 @@ void unlinkClient(client *c) {
                 }
             }
         }
+        // serverLog(LL_DEBUG,"unlink client\n");
         connClose(c->conn);
         c->conn = NULL;
     }
@@ -1363,6 +1390,7 @@ void unlinkClient(client *c) {
 }
 
 void freeClient(client *c) {
+    // serverLog(LL_DEBUG,"free client\n");
     listNode *ln;
 
     /* If a client is protected, yet we need to free it right now, make sure
@@ -1556,6 +1584,7 @@ client *lookupClientByID(uint64_t id) {
     return (c == raxNotFound) ? NULL : c;
 }
 
+// todo
 /* Write data in output buffers to client. Return C_OK if the client
  * is still valid after the call, C_ERR if it was freed because of some
  * error.  If handler_installed is set, it will attempt to clear the
@@ -1565,6 +1594,7 @@ client *lookupClientByID(uint64_t id) {
  * set to 0. So when handler_installed is set to 0 the function must be
  * thread safe. */
 int writeToClient(client *c, int handler_installed) {
+    // serverLog(LL_VERBOSE,"writeToClient \n");
     /* Update total number of writes on server */
     atomicIncr(server.stat_total_writes_processed, 1);
 
@@ -2251,7 +2281,9 @@ void readQueryFromClient(connection *conn) {
     qblen = sdslen(c->querybuf);
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
+    // here read will be overloaded by different net type implementation 
     nread = connRead(c->conn, c->querybuf+qblen, readlen);
+    serverLog(LL_DEBUG, "reading %d bytes from client", nread);
     if (nread == -1) {
         if (connGetState(conn) == CONN_STATE_CONNECTED) {
             return;

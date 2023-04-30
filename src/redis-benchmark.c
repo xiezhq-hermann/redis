@@ -60,6 +60,10 @@
 #include "hdr_histogram.h"
 #include "cli_common.h"
 #include "mt19937-64.h"
+#ifdef USE_RDMA
+#include "rdma.h"
+#endif
+
 
 #define UNUSED(V) ((void) V)
 #define RANDPTR_INITIAL_SIZE 8
@@ -83,6 +87,7 @@ static struct config {
     const char *hostip;
     int hostport;
     const char *hostsocket;
+    int rdma;    
     int tls;
     struct cliSSLconfig sslconfig;
     int numclients;
@@ -157,6 +162,7 @@ typedef struct benchmarkThread {
     int index;
     pthread_t thread;
     aeEventLoop *el;
+    client client;
 } benchmarkThread;
 
 /* Cluster. */
@@ -422,9 +428,15 @@ static void freeAllClients(void) {
 
 static void resetClient(client c) {
     aeEventLoop *el = CLIENT_GET_EVENTLOOP(c);
-    aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
-    aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
-    aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+
+    if (config.rdma) {
+        writeHandler(el,c->context->fd,c,0);
+    } else {
+        aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
+        aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
+        aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+    }
+
     c->written = 0;
     c->pending = config.pipeline;
 }
@@ -648,6 +660,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                     return;
                 }
             } else {
+                if (config.rdma) return;
                 aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
                 aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
                 return;
@@ -701,7 +714,10 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             port = node->port;
             c->cluster_node = node;
         }
-        c->context = redisConnectNonBlock(ip,port);
+        if (config.rdma)
+            c->context = redisConnectRdma(ip,port);
+        else
+            c->context = redisConnectNonBlock(ip,port);
     } else {
         c->context = redisConnectUnixNonBlock(config.hostsocket);
     }
@@ -844,9 +860,15 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
     else {
         benchmarkThread *thread = config.threads[thread_id];
         el = thread->el;
+        thread->client = c;
     }
-    if (config.idlemode == 0)
-        aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+    if (config.idlemode == 0) {
+        if (config.rdma) {
+            writeHandler(el,c->context->fd,c,0);
+        } else {
+            aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+        }
+    }        
     listAddNodeTail(config.clients,c);
     atomicIncr(config.liveclients, 1);
     atomicGet(config.slots_last_update, c->slots_last_update);
@@ -1011,8 +1033,27 @@ static void benchmark(char *title, char *cmd, int len) {
     createMissingClients(c);
 
     config.start = mstime();
-    if (!config.num_threads) aeMain(config.el);
-    else startBenchmarkThreads();
+    printf("config num_threads: %d\n", config.num_threads);
+    if (!config.num_threads) {
+        if (config.rdma) {
+            while (!config.el->stop) {
+                aeProcessEvents(config.el, AE_ALL_EVENTS|
+                                        AE_CALL_BEFORE_SLEEP|
+                                        AE_CALL_AFTER_SLEEP | AE_DONT_WAIT);
+                listNode* ln = config.clients->head;
+                while (ln) {
+                    client c_ = ln->value;
+                    connRdmaHandleCq(c_->context, false);
+                    if (connRdmaHandleCq(c_->context, true) == 0xff) {
+                        readHandler(config.el, -1, c_, 0);
+                    }
+                    ln = ln->next;
+                }
+            }
+        } else {
+            aeMain(config.el);
+        }
+    } else startBenchmarkThreads();
     config.totlatency = mstime()-config.start;
 
     showLatencyReport();
@@ -1541,6 +1582,10 @@ int parseOptions(int argc, const char **argv) {
             config.sslconfig.ciphersuites = strdup(argv[++i]);
         #endif
         #endif
+        #ifdef USE_RDMA
+        } else if (!strcmp(argv[i],"--rdma")) {
+            config.rdma = 1;
+        #endif        
         } else {
             /* Assume the user meant to provide an option when the arg starts
              * with a dash. We're done otherwise and should use the remainder
@@ -1605,6 +1650,9 @@ usage:
 "                    See the ciphers(1ssl) manpage for more information about the syntax of this string,\n"
 "                    and specifically for TLSv1.3 ciphersuites.\n"
 #endif
+#endif
+#ifdef USE_RDMA
+" --rdma             Use RDMA as transport protocol.\n"
 #endif
 " --help             Output this help and exit.\n"
 " --version          Output version and exit.\n\n"
@@ -1713,6 +1761,7 @@ int main(int argc, const char **argv) {
     config.hostip = "127.0.0.1";
     config.hostport = 6379;
     config.hostsocket = NULL;
+    config.rdma = 0;
     config.tests = NULL;
     config.dbnum = 0;
     config.auth = NULL;
