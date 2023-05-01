@@ -147,7 +147,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     addr = ctx->send_buf + index * REDIS_RDMA_CLIENT_TX_SIZE;
     memcpy(addr, data, data_len);
 
-    sge.addr = addr;
+    sge.addr = (uint64_t)addr;
     sge.lkey = ctx->send_mr->lkey;
     sge.length = data_len;
 
@@ -444,19 +444,6 @@ pollcq:
     return REDIS_ERR;
 }
 
-/* RDMA has no POLLOUT event supported, so it could't work well with hiredis async mechanism */
-void redisRdmaAsyncRead(redisAsyncContext *ac)
-{
-    UNUSED(ac);
-    assert("hiredis async mechanism can't work with RDMA" == NULL);
-}
-
-void redisRdmaAsyncWrite(redisAsyncContext *ac)
-{
-    UNUSED(ac);
-    assert("hiredis async mechanism can't work with RDMA" == NULL);
-}
-
 static void redisRdmaClose(redisContext *c)
 {
     RdmaContext *ctx = (RdmaContext *)c->privctx;
@@ -487,14 +474,14 @@ static void redisRdmaFree(void *privctx)
 redisContextFuncs redisContextRdmaFuncs = {
     .close = redisRdmaClose,
     .free_privctx = redisRdmaFree,
-    .async_read = redisRdmaAsyncRead,
-    .async_write = redisRdmaAsyncWrite,
     .read = redisRdmaRead,
     .write = redisRdmaWrite,
 };
 
+// note, connected, created RDMA structs for further communication
 static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
 {
+    // printf("route resolved, creating RDMA structs\n");
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct ibv_cq *send_cq, *recv_cq;
     struct ibv_pd *pd = NULL;
@@ -549,6 +536,8 @@ static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
     conn_param.initiator_depth = 1;
     conn_param.retry_count = 7;
     conn_param.rnr_retry_count = 7;
+
+    // printf("RDMA: connecting to %s:%d\n", c->tcp.host, c->tcp.port);
     if (rdma_connect(cm_id, &conn_param))
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: connect failed");
@@ -579,9 +568,9 @@ static int redisRdmaEstablished(redisContext *c, struct rdma_cm_id *cm_id)
     /* it's time to tell redis we have already connected */
     c->flags |= REDIS_CONNECTED;
     c->funcs = &redisContextRdmaFuncs;
-    c->fd = 0;
     // todo, will a Null fd crash the program?
-    // c->fd = ctx->comp_channel->fd;
+    c->fd = -1;
+    // printf("connection established\n");
 
     return REDIS_OK;
 }
@@ -595,6 +584,7 @@ static int redisRdmaCM(redisContext *c, int timeout)
 
     while (rdma_get_cm_event(ctx->cm_channel, &event) == 0)
     {
+        // printf("event: %s\n", rdma_event_str(event->event));
         switch (event->event)
         {
         case RDMA_CM_EVENT_ADDR_RESOLVED:
@@ -638,6 +628,7 @@ static int redisRdmaCM(redisContext *c, int timeout)
 
 static int redisRdmaWaitConn(redisContext *c, long timeout)
 {
+    // printf("waiting connection from server side\n");
     int timed;
     struct pollfd pfd;
     long now = redisNowMs();
@@ -675,6 +666,7 @@ static int redisRdmaWaitConn(redisContext *c, long timeout)
 int redisContextConnectRdma(redisContext *c, const char *addr, int port,
                             const struct timeval *timeout)
 {
+    // printf("initiate connection between client and servers\n");
     int ret;
     char _port[6]; /* strlen("65535"); */
     struct addrinfo hints, *servinfo, *p;
@@ -790,6 +782,7 @@ int redisContextConnectRdma(redisContext *c, const char *addr, int port,
         }
 
         /* resolve addr as most 100ms */
+        // printf("rdma resolving addr\n");
         if (rdma_resolve_addr(cm_id, NULL, (struct sockaddr *)&saddr, 100))
         {
             continue;
@@ -799,6 +792,7 @@ int redisContextConnectRdma(redisContext *c, const char *addr, int port,
         if ((redisRdmaWaitConn(c, timed) == REDIS_OK) && (c->flags & REDIS_CONNECTED))
         {
             ret = REDIS_OK;
+            printf("rdma connect success\n");
             goto end;
         }
     }

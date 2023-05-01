@@ -33,6 +33,7 @@
 #define __RDMA_H
 
 #include "hiredis.h"
+#include <stdbool.h>
 
 int connRdmaHandleCq(redisContext *c, bool rx);
 int redisContextConnectRdma(redisContext *c, const char *addr, int port, const struct timeval *timeout);
