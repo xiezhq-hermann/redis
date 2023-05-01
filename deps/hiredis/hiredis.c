@@ -971,6 +971,7 @@ int redisBufferRead(redisContext *c) {
     } else if (nread < 0) {
         return REDIS_ERR;
     }
+    // printf("redisBufferRead: nread=%d\n", nread);
     return REDIS_OK;
 }
 

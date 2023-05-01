@@ -1033,8 +1033,22 @@ static void benchmark(char *title, char *cmd, int len) {
     createMissingClients(c);
 
     config.start = mstime();
-    if (!config.num_threads) aeMain(config.el);
-    else startBenchmarkThreads();
+    printf("config num_threads: %d\n", config.num_threads);
+    if (!config.num_threads) {
+        if (config.rdma) {
+            listNode* ln = config.clients->head;
+            while (ln) {
+                client c_ = ln->value;
+                connRdmaHandleCq(c_->context, false);
+                if (connRdmaHandleCq(c_->context, true) == 0xff) {
+                    readHandler(config.el, 0, c, 0);
+                }
+                ln = ln->next;
+            }
+        } else {
+            aeMain(config.el);
+        }
+    } else startBenchmarkThreads();
     config.totlatency = mstime()-config.start;
 
     showLatencyReport();
@@ -1081,8 +1095,7 @@ static void *execBenchmarkThread(void *ptr) {
                                     AE_CALL_AFTER_SLEEP);
             // check for completion of send operations
             connRdmaHandleCq(thread->client->context, false);
-            // check for receiving
-            if (connRdmaHandleCq(thread->client->context, true) == 1) {
+            if (connRdmaHandleCq(thread->client->context, true) == 0xff) {
                 readHandler(thread->el, 0, thread->client, 0);
             }
         }

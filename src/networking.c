@@ -1592,6 +1592,7 @@ client *lookupClientByID(uint64_t id) {
  * set to 0. So when handler_installed is set to 0 the function must be
  * thread safe. */
 int writeToClient(client *c, int handler_installed) {
+    // serverLog(LL_VERBOSE,"writeToClient \n");
     /* Update total number of writes on server */
     atomicIncr(server.stat_total_writes_processed, 1);
 
@@ -2280,6 +2281,7 @@ void readQueryFromClient(connection *conn) {
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     // here read will be overloaded by different net type implementation 
     nread = connRead(c->conn, c->querybuf+qblen, readlen);
+    // serverLog(LL_VERBOSE, "nread=%d done", nread);
     if (nread == -1) {
         if (connGetState(conn) == CONN_STATE_CONNECTED) {
             return;

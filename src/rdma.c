@@ -130,6 +130,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     send_wr.opcode = IBV_WR_SEND;
     send_wr.send_flags = IBV_SEND_SIGNALED;
     send_wr.next = NULL;
+    // serverLog(LL_VERBOSE, "post send, length: %d", data_len);
     if (ibv_post_send(cm_id->qp, &send_wr, &bad_wr))
     {
         return C_ERR;
@@ -394,6 +395,7 @@ void connRdmaEventHandler(struct aeEventLoop *el, int fd, void *clientData, int 
     /* uplayer should read all */
     while (ctx->outstanding_msg_size != 0)
     {
+        serverLog(LL_VERBOSE, "RDMA: outstanding msg size %d", ctx->outstanding_msg_size);
         // initiate data reading when they are ready
         if (conn->read_handler && (callHandler(conn, conn->read_handler) == C_ERR))
         {
@@ -1139,7 +1141,6 @@ connection *connCreateAcceptedRdma(int fd, void *priv)
     rdma_connection *rdma_conn = (rdma_connection *)connCreateRdma();
     // todo: will not use this one
     rdma_conn->c.fd = fd;
-    // rdma_conn->c.fd = fd;
     rdma_conn->c.state = CONN_STATE_ACCEPTING;
     rdma_conn->cm_id = priv;
 

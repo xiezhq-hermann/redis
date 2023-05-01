@@ -179,6 +179,7 @@ static int rdmaPostRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32_t ind
     recv_wr.num_sge = 1;
     recv_wr.next = NULL;
 
+    // printf("rdmaPostRecv: index=%d\n", index);
     if (ibv_post_recv(cm_id->qp, &recv_wr, &bad_wr))
     {
         return REDIS_ERR;
@@ -298,10 +299,12 @@ pollcq:
     if (rx)
     {
         ret = ibv_poll_cq(ctx->recv_cq, 1, &wc);
+        // printf("poll recv cq\n");
     }
     else
     {
         ret = ibv_poll_cq(ctx->send_cq, 1, &wc);
+        // printf("poll send cq\n");
     }
     if (ret < 0)
     {
@@ -322,12 +325,13 @@ pollcq:
     switch (wc.opcode)
     {
     case IBV_WC_RECV:
+        // printf("received messages\n");
         if (connRdmaHandleRecv(c, ctx, cm_id, wc.wr_id, wc.byte_len) == REDIS_ERR)
         {
             return REDIS_ERR;
         }
         // todo, hard coding
-        return 1;
+        return 0xff;
 
         break;
 
@@ -350,6 +354,7 @@ pollcq:
 
 static ssize_t redisRdmaRead(redisContext *c, char *buf, size_t bufcap)
 {
+    // printf("reading messages\n");
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct rdma_cm_id *cm_id = ctx->cm_id;
     long timed = -1;
@@ -396,6 +401,7 @@ pollcq:
 
 static ssize_t redisRdmaWrite(redisContext *c)
 {
+    // printf("sending messages\n");
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct rdma_cm_id *cm_id = ctx->cm_id;
     size_t data_len = hi_sdslen(c->obuf);
@@ -792,7 +798,7 @@ int redisContextConnectRdma(redisContext *c, const char *addr, int port,
         if ((redisRdmaWaitConn(c, timed) == REDIS_OK) && (c->flags & REDIS_CONNECTED))
         {
             ret = REDIS_OK;
-            printf("rdma connect success\n");
+            // printf("rdma connect success\n");
             goto end;
         }
     }
