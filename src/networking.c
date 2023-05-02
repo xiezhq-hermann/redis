@@ -1355,6 +1355,7 @@ void unlinkClient(client *c) {
                 }
             }
         }
+        // serverLog(LL_DEBUG,"unlink client\n");
         connClose(c->conn);
         c->conn = NULL;
     }
@@ -1389,6 +1390,7 @@ void unlinkClient(client *c) {
 }
 
 void freeClient(client *c) {
+    // serverLog(LL_DEBUG,"free client\n");
     listNode *ln;
 
     /* If a client is protected, yet we need to free it right now, make sure
@@ -2281,7 +2283,7 @@ void readQueryFromClient(connection *conn) {
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     // here read will be overloaded by different net type implementation 
     nread = connRead(c->conn, c->querybuf+qblen, readlen);
-    // serverLog(LL_VERBOSE, "nread=%d done", nread);
+    serverLog(LL_DEBUG, "reading %d bytes from client", nread);
     if (nread == -1) {
         if (connGetState(conn) == CONN_STATE_CONNECTED) {
             return;

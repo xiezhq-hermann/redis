@@ -55,7 +55,7 @@ static void serverNetError(char *err, const char *fmt, ...)
 #define REDIS_MAX_SGE 1023
 #define REDIS_RDMA_SERVER_RX_SIZE 1024
 #define REDIS_RDMA_SERVER_TX_SIZE 8192
-#define REDIS_SYNCIO_RES 10
+// #define REDIS_SYNCIO_RES 10
 
 typedef struct rdma_connection
 {
@@ -288,6 +288,11 @@ static int connRdmaHandleRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32
     ctx->recv_offset = index * REDIS_RDMA_SERVER_RX_SIZE;
     ctx->outstanding_msg_size = byte_len;
 
+    if (ctx->conn->read_handler && (callHandler(ctx->conn, ctx->conn->read_handler) == C_ERR))
+    {
+        return C_ERR;
+    }
+
     // to replenish the recv buffer
     return rdmaPostRecv(ctx, cm_id, index);
 }
@@ -332,8 +337,6 @@ pollcq:
         {
             return C_ERR;
         }
-        // todo, hard coding
-        return 1;
         break;
 
     case IBV_WC_SEND:
@@ -393,15 +396,15 @@ void connRdmaEventHandler(struct aeEventLoop *el, int fd, void *clientData, int 
     }
 
     /* uplayer should read all */
-    while (ctx->outstanding_msg_size != 0)
-    {
-        serverLog(LL_VERBOSE, "RDMA: outstanding msg size %d", ctx->outstanding_msg_size);
-        // initiate data reading when they are ready
-        if (conn->read_handler && (callHandler(conn, conn->read_handler) == C_ERR))
-        {
-            return;
-        }
-    }
+    // while (ctx->outstanding_msg_size != 0)
+    // {
+    //     serverLog(LL_VERBOSE, "RDMA: outstanding msg size %d", ctx->outstanding_msg_size);
+    //     // initiate data reading when they are ready
+    //     if (conn->read_handler && (callHandler(conn, conn->read_handler) == C_ERR))
+    //     {
+    //         return;
+    //     }
+    // }
 
     /* recv buf is full, register a new RX buffer */
     // if (ctx->recv_offset == ctx->recv_length)
@@ -416,21 +419,21 @@ void connRdmaEventHandler(struct aeEventLoop *el, int fd, void *clientData, int 
     }
 }
 
-int connRdmaCron(struct aeEventLoop *eventLoop, long long id, void *clientData)
-{
-    connection *conn = (connection *)clientData;
+// int connRdmaCron(struct aeEventLoop *eventLoop, long long id, void *clientData)
+// {
+//     connection *conn = (connection *)clientData;
 
-    UNUSED(eventLoop);
-    UNUSED(id);
-    if (conn->state != CONN_STATE_CONNECTED)
-    {
-        return REDIS_SYNCIO_RES;
-    }
+//     UNUSED(eventLoop);
+//     UNUSED(id);
+//     if (conn->state != CONN_STATE_CONNECTED)
+//     {
+//         return REDIS_SYNCIO_RES;
+//     }
 
-    connRdmaEventHandler(NULL, -1, conn, 0);
+//     connRdmaEventHandler(NULL, -1, conn, 0);
 
-    return REDIS_SYNCIO_RES;
-}
+//     return REDIS_SYNCIO_RES;
+// }
 
 static int connRdmaSetRwHandler(connection *conn)
 {
@@ -441,33 +444,33 @@ static int connRdmaSetRwHandler(connection *conn)
     /* save conn into RdmaContext */
     ctx->conn = conn;
 
-    /* IB channel only has POLLIN event */
-    if (conn->read_handler || conn->write_handler)
-    {
-        // todo, instead of creating a file event, directly polling in the event loop
-        // if (aeCreateFileEvent(server.el, conn->fd, AE_READABLE, conn->type->ae_handler, conn) == AE_ERR)
-        // {
-        //     return C_ERR;
-        // }
+    // /* IB channel only has POLLIN event */
+    // if (conn->read_handler || conn->write_handler)
+    // {
+    //     // todo, instead of creating a file event, directly polling in the event loop
+    //     // if (aeCreateFileEvent(server.el, conn->fd, AE_READABLE, conn->type->ae_handler, conn) == AE_ERR)
+    //     // {
+    //     //     return C_ERR;
+    //     // }
 
-        if (ctx->timeEvent == -1)
-        {
-            ctx->timeEvent = aeCreateTimeEvent(server.el, REDIS_SYNCIO_RES, connRdmaCron, conn, NULL);
-            if (ctx->timeEvent == AE_ERR)
-            {
-                return C_ERR;
-            }
-        }
-    }
-    else
-    {
-        // aeDeleteFileEvent(server.el, conn->fd, AE_READABLE);
-        if (ctx->timeEvent > 0)
-        {
-            aeDeleteTimeEvent(server.el, ctx->timeEvent);
-            ctx->timeEvent = -1;
-        }
-    }
+    //     if (ctx->timeEvent == -1)
+    //     {
+    //         // ctx->timeEvent = aeCreateTimeEvent(server.el, REDIS_SYNCIO_RES, connRdmaCron, conn, NULL);
+    //         // if (ctx->timeEvent == AE_ERR)
+    //         // {
+    //         //     return C_ERR;
+    //         // }
+    //     }
+    // }
+    // else
+    // {
+    //     // aeDeleteFileEvent(server.el, conn->fd, AE_READABLE);
+    //     if (ctx->timeEvent > 0)
+    //     {
+    //         // aeDeleteTimeEvent(server.el, ctx->timeEvent);
+    //         // ctx->timeEvent = -1;
+    //     }
+    // }
 
     return C_OK;
 }
@@ -722,6 +725,7 @@ out:
 
 static void connRdmaClose(connection *conn)
 {
+    serverLog(LL_VERBOSE, "RDMA: close connection %p", conn);
     rdma_connection *rdma_conn = (rdma_connection *)conn;
     struct rdma_cm_id *cm_id = rdma_conn->cm_id;
     RdmaContext *ctx;
@@ -797,6 +801,7 @@ static int connRdmaRead(connection *conn, void *buf, size_t buf_len)
     rdma_connection *rdma_conn = (rdma_connection *)conn;
     struct rdma_cm_id *cm_id = rdma_conn->cm_id;
     RdmaContext *ctx = cm_id->context;
+    // serverLog(LL_DEBUG, "connection state: %d while reading data", conn->state);
 
     if (conn->state == CONN_STATE_ERROR || conn->state == CONN_STATE_CLOSED)
     {
@@ -1039,7 +1044,7 @@ static int rdmaHandleConnect(char *err, struct rdma_cm_event *ev, char *ip, size
         serverNetError(err, "RDMA: accept failed");
         goto free_rdma;
     }
-    // serverLog(LL_VERBOSE, "RDMA: successful connection from %s:%d\n", ctx->ip, ctx->port);
+    serverLog(LL_VERBOSE, "RDMA: successful connection from %s:%d\n", ctx->ip, ctx->port);
     return C_OK;
 
 free_rdma:
@@ -1076,7 +1081,7 @@ int rdmaAccept(char *err, int s, char *ip, size_t ip_len, int *port, void **priv
     }
 
     ev_type = ev->event;
-    // serverLog(LL_VERBOSE, "RDMA: event type %s", rdma_event_str(ev_type));
+    serverLog(LL_DEBUG, "RDMA: event type %s", rdma_event_str(ev_type));
     switch (ev_type)
     {
     case RDMA_CM_EVENT_CONNECT_REQUEST:

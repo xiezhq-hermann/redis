@@ -428,12 +428,12 @@ static void freeAllClients(void) {
 
 static void resetClient(client c) {
     aeEventLoop *el = CLIENT_GET_EVENTLOOP(c);
-    aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
-    aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
 
     if (config.rdma) {
         writeHandler(el,c->context->fd,c,0);
     } else {
+        aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
+        aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
         aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
     }
 
@@ -1036,14 +1036,19 @@ static void benchmark(char *title, char *cmd, int len) {
     printf("config num_threads: %d\n", config.num_threads);
     if (!config.num_threads) {
         if (config.rdma) {
-            listNode* ln = config.clients->head;
-            while (ln) {
-                client c_ = ln->value;
-                connRdmaHandleCq(c_->context, false);
-                if (connRdmaHandleCq(c_->context, true) == 0xff) {
-                    readHandler(config.el, 0, c, 0);
+            while (!config.el->stop) {
+                aeProcessEvents(config.el, AE_ALL_EVENTS|
+                                        AE_CALL_BEFORE_SLEEP|
+                                        AE_CALL_AFTER_SLEEP);
+                listNode* ln = config.clients->head;
+                while (ln) {
+                    client c_ = ln->value;
+                    connRdmaHandleCq(c_->context, false);
+                    if (connRdmaHandleCq(c_->context, true) == 0xff) {
+                        readHandler(config.el, -1, c, 0);
+                    }
+                    ln = ln->next;
                 }
-                ln = ln->next;
             }
         } else {
             aeMain(config.el);

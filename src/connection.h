@@ -177,6 +177,7 @@ static inline int connSetWriteHandlerWithBarrier(connection *conn, ConnectionCal
 }
 
 static inline void connClose(connection *conn) {
+    // printf("an connClose request has been made\n");
     conn->type->close(conn);
 }
 

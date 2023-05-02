@@ -157,6 +157,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     send_wr.opcode = IBV_WR_SEND;
     send_wr.send_flags = IBV_SEND_SIGNALED;
     send_wr.next = NULL;
+    // printf("rdmaPostSend: %d with index %d\n", data_len, index);
     if (ibv_post_send(cm_id->qp, &send_wr, &bad_wr))
     {
         return REDIS_ERR;
@@ -452,6 +453,7 @@ pollcq:
 
 static void redisRdmaClose(redisContext *c)
 {
+    // printf("closing connection\n");
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct rdma_cm_id *cm_id = ctx->cm_id;
 
