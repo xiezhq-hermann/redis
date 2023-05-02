@@ -1045,7 +1045,7 @@ static void benchmark(char *title, char *cmd, int len) {
                     client c_ = ln->value;
                     connRdmaHandleCq(c_->context, false);
                     if (connRdmaHandleCq(c_->context, true) == 0xff) {
-                        readHandler(config.el, -1, c, 0);
+                        readHandler(config.el, -1, c_, 0);
                     }
                     ln = ln->next;
                 }
@@ -1092,21 +1092,7 @@ static void freeBenchmarkThreads() {
 
 static void *execBenchmarkThread(void *ptr) {
     benchmarkThread *thread = (benchmarkThread *) ptr;
-    if (config.rdma) {
-        thread->el->stop = 0;
-        while (!thread->el->stop) {
-            aeProcessEvents(thread->el, AE_ALL_EVENTS|
-                                    AE_CALL_BEFORE_SLEEP|
-                                    AE_CALL_AFTER_SLEEP);
-            // check for completion of send operations
-            connRdmaHandleCq(thread->client->context, false);
-            if (connRdmaHandleCq(thread->client->context, true) == 0xff) {
-                readHandler(thread->el, 0, thread->client, 0);
-            }
-        }
-    } else {
-        aeMain(thread->el);
-    }
+    aeMain(thread->el);
     return NULL;
 }
 

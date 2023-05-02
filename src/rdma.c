@@ -104,6 +104,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     uint64_t addr;
 
     /* find an unused send buffer entry */
+    // todo, is this time consuming?
     for (index = 0; index < REDIS_MAX_SGE; index++)
     {
         if (!ctx->send_status[index])
@@ -130,7 +131,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     send_wr.opcode = IBV_WR_SEND;
     send_wr.send_flags = IBV_SEND_SIGNALED;
     send_wr.next = NULL;
-    // serverLog(LL_VERBOSE, "post send, length: %d", data_len);
+    serverLog(LL_DEBUG, "post send, length: %d", data_len);
     if (ibv_post_send(cm_id->qp, &send_wr, &bad_wr))
     {
         return C_ERR;
@@ -380,60 +381,21 @@ void connRdmaEventHandler(struct aeEventLoop *el, int fd, void *clientData, int 
     struct rdma_cm_id *cm_id = rdma_conn->cm_id;
     RdmaContext *ctx = cm_id->context;
 
-    int ret = 0;
-
     UNUSED(el);
     UNUSED(fd);
     UNUSED(mask);
 
-    ret = connRdmaHandleCq(rdma_conn, true);
-    ret = connRdmaHandleCq(rdma_conn, false);
-
-    if (ret == C_ERR)
+    if (connRdmaHandleCq(rdma_conn, true) == C_ERR || connRdmaHandleCq(rdma_conn, false) == C_ERR)
     {
         conn->state = CONN_STATE_ERROR;
         return;
     }
 
-    /* uplayer should read all */
-    // while (ctx->outstanding_msg_size != 0)
-    // {
-    //     serverLog(LL_VERBOSE, "RDMA: outstanding msg size %d", ctx->outstanding_msg_size);
-    //     // initiate data reading when they are ready
-    //     if (conn->read_handler && (callHandler(conn, conn->read_handler) == C_ERR))
-    //     {
-    //         return;
-    //     }
-    // }
-
-    /* recv buf is full, register a new RX buffer */
-    // if (ctx->recv_offset == ctx->recv_length)
-    // {
-    //     connRdmaRegisterRx(ctx, cm_id);
-    // }
-
-    /* RDMA comp channel has no POLLOUT event, try to send remaining buffer */
     if (conn->write_handler)
     {
         callHandler(conn, conn->write_handler);
     }
 }
-
-// int connRdmaCron(struct aeEventLoop *eventLoop, long long id, void *clientData)
-// {
-//     connection *conn = (connection *)clientData;
-
-//     UNUSED(eventLoop);
-//     UNUSED(id);
-//     if (conn->state != CONN_STATE_CONNECTED)
-//     {
-//         return REDIS_SYNCIO_RES;
-//     }
-
-//     connRdmaEventHandler(NULL, -1, conn, 0);
-
-//     return REDIS_SYNCIO_RES;
-// }
 
 static int connRdmaSetRwHandler(connection *conn)
 {
@@ -443,34 +405,6 @@ static int connRdmaSetRwHandler(connection *conn)
 
     /* save conn into RdmaContext */
     ctx->conn = conn;
-
-    // /* IB channel only has POLLIN event */
-    // if (conn->read_handler || conn->write_handler)
-    // {
-    //     // todo, instead of creating a file event, directly polling in the event loop
-    //     // if (aeCreateFileEvent(server.el, conn->fd, AE_READABLE, conn->type->ae_handler, conn) == AE_ERR)
-    //     // {
-    //     //     return C_ERR;
-    //     // }
-
-    //     if (ctx->timeEvent == -1)
-    //     {
-    //         // ctx->timeEvent = aeCreateTimeEvent(server.el, REDIS_SYNCIO_RES, connRdmaCron, conn, NULL);
-    //         // if (ctx->timeEvent == AE_ERR)
-    //         // {
-    //         //     return C_ERR;
-    //         // }
-    //     }
-    // }
-    // else
-    // {
-    //     // aeDeleteFileEvent(server.el, conn->fd, AE_READABLE);
-    //     if (ctx->timeEvent > 0)
-    //     {
-    //         // aeDeleteTimeEvent(server.el, ctx->timeEvent);
-    //         // ctx->timeEvent = -1;
-    //     }
-    // }
 
     return C_OK;
 }

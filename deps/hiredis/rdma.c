@@ -285,6 +285,8 @@ static int connRdmaHandleRecv(redisContext *c, RdmaContext *ctx, struct rdma_cm_
     ctx->recv_offset = index * REDIS_RDMA_CLIENT_RX_SIZE;
     ctx->outstanding_msg_size = byte_len;
 
+    // todo, should we register read handler function here?
+
     // to replenish the recv buffer
     return rdmaPostRecv(ctx, cm_id, index);
 }
@@ -331,7 +333,7 @@ pollcq:
         {
             return REDIS_ERR;
         }
-        // todo, hard coding
+        // printf("received %d bytes, id %d\n", wc.byte_len, wc.wr_id);
         return 0xff;
 
         break;
@@ -355,7 +357,6 @@ pollcq:
 
 static ssize_t redisRdmaRead(redisContext *c, char *buf, size_t bufcap)
 {
-    // printf("reading messages\n");
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct rdma_cm_id *cm_id = ctx->cm_id;
     long timed = -1;
@@ -379,6 +380,7 @@ copy:
         return toread;
     }
 
+// todo, not necessary
 pollcq:
     /* try to poll a CQ firstly */
     if (connRdmaHandleCq(c, true) == REDIS_ERR)
@@ -406,49 +408,13 @@ static ssize_t redisRdmaWrite(redisContext *c)
     RdmaContext *ctx = (RdmaContext *)c->privctx;
     struct rdma_cm_id *cm_id = ctx->cm_id;
     size_t data_len = hi_sdslen(c->obuf);
-    long timed = -1;
-    long start = redisNowMs();
-    uint32_t towrite = 0;
 
-    if (redisCommandTimeoutMsec(c, &timed))
+    if (rdmaPostSend(ctx, cm_id, c->obuf, data_len) == (size_t)REDIS_ERR)
     {
         return REDIS_ERR;
     }
 
-pollcq:
-    if (connRdmaHandleCq(c, false) == REDIS_ERR)
-    {
-        return REDIS_ERR;
-    }
-
-    bool full = true;
-    for (int i = 0; i < REDIS_MAX_SGE; i++)
-    {
-        if (!ctx->send_status[i])
-        {
-            full = false;
-            break;
-        }
-    }
-
-    if (!full)
-    {
-        if (rdmaPostSend(ctx, cm_id, c->obuf, data_len) == (size_t)REDIS_ERR)
-        {
-            return REDIS_ERR;
-        }
-
-        return data_len;
-    }
-
-    if ((redisNowMs() - start) < timed)
-    {
-        goto pollcq;
-    }
-
-    __redisSetError(c, REDIS_ERR_TIMEOUT, "RDMA: write timeout");
-
-    return REDIS_ERR;
+    return data_len;
 }
 
 static void redisRdmaClose(redisContext *c)
