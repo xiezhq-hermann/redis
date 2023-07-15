@@ -87,7 +87,7 @@ static struct config {
     const char *hostip;
     int hostport;
     const char *hostsocket;
-    int rdma;    
+    int rdma;
     int tls;
     struct cliSSLconfig sslconfig;
     int numclients;
@@ -868,7 +868,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
         } else {
             aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
         }
-    }        
+    }
     listAddNodeTail(config.clients,c);
     atomicIncr(config.liveclients, 1);
     atomicGet(config.slots_last_update, c->slots_last_update);
@@ -1585,7 +1585,7 @@ int parseOptions(int argc, const char **argv) {
         #ifdef USE_RDMA
         } else if (!strcmp(argv[i],"--rdma")) {
             config.rdma = 1;
-        #endif        
+        #endif
         } else {
             /* Assume the user meant to provide an option when the arg starts
              * with a dash. We're done otherwise and should use the remainder
@@ -1686,7 +1686,7 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     atomicGet(config.liveclients, liveclients);
     atomicGet(config.requests_finished, requests_finished);
     atomicGet(config.previous_requests_finished, previous_requests_finished);
-    
+
     if (liveclients == 0 && requests_finished != config.requests) {
         fprintf(stderr,"All clients disconnected... aborting.\n");
         exit(1);
@@ -1831,12 +1831,6 @@ int main(int argc, const char **argv) {
          * by the user. */
         if (config.num_threads == 0)
             config.num_threads = config.cluster_node_count;
-    } else {
-        config.redis_config =
-            getRedisConfig(config.hostip, config.hostport, config.hostsocket);
-        if (config.redis_config == NULL) {
-            fprintf(stderr, "WARN: could not fetch server CONFIG\n");
-        }
     }
     if (config.num_threads > 0) {
         pthread_mutex_init(&(config.liveclients_mutex), NULL);

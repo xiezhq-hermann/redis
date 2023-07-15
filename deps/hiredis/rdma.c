@@ -51,6 +51,7 @@ void __redisSetError(redisContext *c, int type, const char *str);
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 
 #define MIN(a, b) (a) < (b) ? a : b
 #define REDIS_MAX_SGE 128
@@ -197,7 +198,7 @@ static void rdmaDestroyIoBuf(RdmaContext *ctx)
         ctx->recv_mr = NULL;
     }
 
-    hi_free(ctx->recv_buf);
+    munmap(ctx->recv_buf, REDIS_MAX_SGE * REDIS_RDMA_CLIENT_RX_SIZE);
     ctx->recv_buf = NULL;
 
     if (ctx->send_mr)
@@ -206,7 +207,7 @@ static void rdmaDestroyIoBuf(RdmaContext *ctx)
         ctx->send_mr = NULL;
     }
 
-    hi_free(ctx->send_buf);
+    munmap(ctx->send_buf, REDIS_MAX_SGE * REDIS_RDMA_CLIENT_TX_SIZE);
     ctx->send_buf = NULL;
 
     if (ctx->status_mr)
@@ -215,7 +216,7 @@ static void rdmaDestroyIoBuf(RdmaContext *ctx)
         ctx->status_mr = NULL;
     }
 
-    hi_free(ctx->send_status);
+    munmap(ctx->send_status, REDIS_MAX_SGE * sizeof(bool));
     ctx->send_status = NULL;
 }
 
@@ -223,7 +224,7 @@ static int rdmaSetupIoBuf(redisContext *c, RdmaContext *ctx, struct rdma_cm_id *
 {
     int access = IBV_ACCESS_LOCAL_WRITE;
     size_t length = REDIS_MAX_SGE * sizeof(bool);
-    ctx->send_status = hi_calloc(length, 1);
+    ctx->send_status = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ctx->status_mr = ibv_reg_mr(ctx->pd, ctx->send_status, length, access);
     if (!ctx->status_mr)
     {
@@ -233,7 +234,7 @@ static int rdmaSetupIoBuf(redisContext *c, RdmaContext *ctx, struct rdma_cm_id *
 
     access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
     length = REDIS_MAX_SGE * REDIS_RDMA_CLIENT_RX_SIZE;
-    ctx->recv_buf = hi_calloc(length, 1);
+    ctx->recv_buf = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ctx->recv_length = length;
     ctx->recv_offset = 0;
     ctx->outstanding_msg_size = 0;
@@ -255,7 +256,7 @@ static int rdmaSetupIoBuf(redisContext *c, RdmaContext *ctx, struct rdma_cm_id *
     // }
 
     length = REDIS_MAX_SGE * REDIS_RDMA_CLIENT_TX_SIZE;
-    ctx->send_buf = hi_calloc(length, 1);
+    ctx->send_buf = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ctx->send_length = length;
     ctx->send_mr = ibv_reg_mr(ctx->pd, ctx->send_buf, length, access);
     if (!ctx->send_mr)
@@ -491,6 +492,8 @@ static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
     init_attr.qp_type = IBV_QPT_RC;
     init_attr.send_cq = send_cq;
     init_attr.recv_cq = recv_cq;
+    init_attr.srq = NULL;
+    init_attr.sq_sig_all = 1;
     if (rdma_create_qp(cm_id, pd, &init_attr))
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: create qp failed");
@@ -506,11 +509,9 @@ static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
         goto free_qp;
 
     /* rdma connect with param */
-    conn_param.responder_resources = 1;
-    conn_param.initiator_depth = 1;
-    conn_param.retry_count = 7;
-    conn_param.rnr_retry_count = 7;
-
+    conn_param.responder_resources = 0;
+    conn_param.initiator_depth = 0;
+    conn_param.qp_num = ctx->cm_id->qp->qp_num;
     // printf("RDMA: connecting to %s:%d\n", c->tcp.host, c->tcp.port);
     if (rdma_connect(cm_id, &conn_param))
     {
