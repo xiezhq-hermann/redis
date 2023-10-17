@@ -831,7 +831,7 @@ redisContext *redisConnectWithOptions(const redisOptions *options) {
         c->flags |= REDIS_CONNECTED;
     } else if (options->type == REDIS_CONN_RDMA) {
         if (redisContextConnectRdma(c, options->endpoint.tcp.ip, options->endpoint.tcp.port,
-                                    options->connect_timeout)) {
+                                    options->connect_timeout, options->endpoint.tcp.ib_devname)) {
             return c; /* error should be already saved in c */
         }
     } else {
@@ -914,15 +914,15 @@ redisContext *redisConnectFd(redisFD fd) {
     return redisConnectWithOptions(&options);
 }
 
-redisContext *redisConnectRdma(const char *ip, int port) {
+redisContext *redisConnectRdma(const char *ip, int port, const char *ib_devname) {
     redisOptions options = {0};
-    REDIS_OPTIONS_SET_RDMA(&options, ip, port);
+    REDIS_OPTIONS_SET_RDMA(&options, ip, port, ib_devname);
     return redisConnectWithOptions(&options);
 }
 
-redisContext *redisConnectRdmaTimeout(const char *ip, int port, const struct timeval tv) {
+redisContext *redisConnectRdmaTimeout(const char *ip, int port, const struct timeval tv, const char *ib_devname) {
     redisOptions options = {0};
-    REDIS_OPTIONS_SET_RDMA(&options, ip, port);
+    REDIS_OPTIONS_SET_RDMA(&options, ip, port, ib_devname);
     options.connect_timeout = &tv;
     return redisConnectWithOptions(&options);
 }

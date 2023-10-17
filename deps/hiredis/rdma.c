@@ -55,8 +55,14 @@ void __redisSetError(redisContext *c, int type, const char *str);
 
 #define MIN(a, b) (a) < (b) ? a : b
 #define REDIS_MAX_SGE 128
-#define REDIS_RDMA_CLIENT_TX_SIZE 1024
-#define REDIS_RDMA_CLIENT_RX_SIZE 8192
+#define REDIS_RDMA_CLIENT_TX_SIZE 9000
+#define REDIS_RDMA_CLIENT_RX_SIZE 9000
+
+// todo, have a look up table for different redis message size
+// #define REDIS_RDMA_CLIENT_TX_SET_SIZE 1069
+// #define REDIS_RDMA_CLIENT_TX_GET_SIZE 36
+// #define REDIS_RDMA_CLIENT_RX_ACK_SIZE 5
+// #define REDIS_RDMA_CLIENT_RX_GET_SIZE 1033
 #define __MAX_MSEC (((LONG_MAX)-999) / 1000)
 
 typedef struct RdmaContext
@@ -87,6 +93,28 @@ typedef struct RdmaContext
 int redisContextTimeoutMsec(redisContext *c, long *result);
 int redisSetFdBlocking(redisContext *c, redisFD fd, int blocking);
 int redisContextUpdateConnectTimeout(redisContext *c, const struct timeval *timeout);
+
+// manually specify the ib device
+char ib_devname_client[100];
+static struct ibv_device* find_ib_device(const char *ib_devname)
+{
+    int num_devices;
+    struct ibv_device **dev_list;
+    struct ibv_device *ib_dev = NULL;
+
+    dev_list = ibv_get_device_list(&num_devices);
+    assert(num_devices > 0);
+    for (int i = 0; i < num_devices; i++)
+    {
+        if (strcmp(ibv_get_device_name(dev_list[i]), ib_devname) == 0)
+        {
+            ib_dev = dev_list[i];
+            break;
+        }
+    }
+    assert(ib_dev != NULL);
+    return ib_dev;
+}
 
 static inline long redisNowMs(void)
 {
@@ -150,6 +178,7 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
 
     sge.addr = (uint64_t)addr;
     sge.lkey = ctx->send_mr->lkey;
+    // assert(data_len == REDIS_RDMA_CLIENT_TX_SET_SIZE || data_len == REDIS_RDMA_CLIENT_TX_GET_SIZE);
     sge.length = data_len;
 
     send_wr.sg_list = &sge;
@@ -167,13 +196,13 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     return data_len;
 }
 
-static int rdmaPostRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32_t index)
+static int rdmaPostRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32_t index, uint32_t byte_len)
 {
     struct ibv_sge sge;
     struct ibv_recv_wr recv_wr, *bad_wr;
 
     sge.addr = (uint64_t)(ctx->recv_buf + index * REDIS_RDMA_CLIENT_RX_SIZE);
-    sge.length = REDIS_RDMA_CLIENT_RX_SIZE;
+    sge.length = byte_len;
     sge.lkey = ctx->recv_mr->lkey;
 
     recv_wr.wr_id = index;
@@ -232,7 +261,7 @@ static int rdmaSetupIoBuf(redisContext *c, RdmaContext *ctx, struct rdma_cm_id *
         goto destroy_iobuf;
     }
 
-    access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+    // access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
     length = REDIS_MAX_SGE * REDIS_RDMA_CLIENT_RX_SIZE;
     ctx->recv_buf = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ctx->recv_length = length;
@@ -289,7 +318,8 @@ static int connRdmaHandleRecv(redisContext *c, RdmaContext *ctx, struct rdma_cm_
     // todo, should we register read handler function here?
 
     // to replenish the recv buffer
-    return rdmaPostRecv(ctx, cm_id, index);
+    // assert(byte_len == REDIS_RDMA_CLIENT_RX_ACK_SIZE || byte_len == REDIS_RDMA_CLIENT_RX_GET_SIZE);
+    return rdmaPostRecv(ctx, cm_id, index, byte_len);
 }
 
 int connRdmaHandleCq(redisContext *c, bool rx)
@@ -463,21 +493,32 @@ static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
     struct ibv_qp_init_attr init_attr = {0};
     struct rdma_conn_param conn_param = {0};
 
-    pd = ibv_alloc_pd(cm_id->verbs);
+    struct ibv_context *ib_ctx = NULL;
+    if (ib_devname_client[0] == 0)
+    {
+        ib_ctx = cm_id->verbs;
+    } else {
+        struct ibv_device *ib_dev = find_ib_device(ib_devname_client);
+        ib_ctx = ibv_open_device(ib_dev);
+        assert(ib_ctx != NULL);
+        printf("RDMA: using ib device %s\n", ib_devname_client);
+    }
+    pd = ibv_alloc_pd(ib_ctx);
+
     if (!pd)
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: alloc pd failed");
         goto error;
     }
 
-    send_cq = ibv_create_cq(cm_id->verbs, REDIS_MAX_SGE, NULL, NULL, 0);
+    send_cq = ibv_create_cq(ib_ctx, REDIS_MAX_SGE, NULL, NULL, 0);
     if (!send_cq)
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: create send cq failed");
         goto error;
     }
 
-    recv_cq = ibv_create_cq(cm_id->verbs, REDIS_MAX_SGE, NULL, NULL, 0);
+    recv_cq = ibv_create_cq(ib_ctx, REDIS_MAX_SGE, NULL, NULL, 0);
     if (!recv_cq)
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: create recv cq failed");
@@ -494,11 +535,23 @@ static int redisRdmaConnect(redisContext *c, struct rdma_cm_id *cm_id)
     init_attr.recv_cq = recv_cq;
     init_attr.srq = NULL;
     init_attr.sq_sig_all = 1;
-    if (rdma_create_qp(cm_id, pd, &init_attr))
+    cm_id->qp = ibv_create_qp(pd, &init_attr);
+    if (cm_id->qp == NULL)
+    // if (rdma_create_qp(cm_id, pd, &init_attr))
     {
         __redisSetError(c, REDIS_ERR_OTHER, "RDMA: create qp failed");
         goto error;
     }
+
+    // required by sysb to change the states of qp
+    int flags;
+    struct ibv_qp_attr attr = {0};
+	attr.pkey_index = 0;
+	attr.port_num = 1;
+	attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE;
+	attr.qp_state = IBV_QPS_INIT;
+	flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+	assert (!ibv_modify_qp(cm_id->qp, &attr, flags));
 
     ctx->cm_id = cm_id;
     ctx->send_cq = send_cq;
@@ -550,7 +603,8 @@ static int redisRdmaEstablished(redisContext *c, struct rdma_cm_id *cm_id)
     // start to accept data
     for (int i = 0; i < REDIS_MAX_SGE; i++)
     {
-        if (rdmaPostRecv(ctx, cm_id, i) == REDIS_ERR)
+        // todo, mapping redis message size to SGE size
+        if (rdmaPostRecv(ctx, cm_id, i, REDIS_RDMA_CLIENT_RX_SIZE) == REDIS_ERR)
         {
             __redisSetError(c, REDIS_ERR_OTHER, "RDMA: post recv failed");
             // goto destroy_iobuf;
@@ -649,7 +703,7 @@ static int redisRdmaWaitConn(redisContext *c, long timeout)
 }
 
 int redisContextConnectRdma(redisContext *c, const char *addr, int port,
-                            const struct timeval *timeout)
+                            const struct timeval *timeout, const char *ib_devname)
 {
     // printf("initiate connection between client and servers\n");
     int ret;
@@ -661,6 +715,10 @@ int redisContextConnectRdma(redisContext *c, const char *addr, int port,
     RdmaContext *ctx = NULL;
     struct sockaddr_storage saddr;
     long start = redisNowMs(), timed;
+
+    memset(ib_devname_client, 0, sizeof(ib_devname_client));
+    if (ib_devname)
+        strncpy(ib_devname_client, ib_devname, sizeof(ib_devname_client) - 1);
 
     servinfo = NULL;
     c->connection_type = REDIS_CONN_RDMA;

@@ -132,6 +132,7 @@ static struct config {
     int enable_tracking;
     pthread_mutex_t liveclients_mutex;
     pthread_mutex_t is_updating_slots_mutex;
+    char *ib_devname;
 } config;
 
 typedef struct _client {
@@ -715,7 +716,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             c->cluster_node = node;
         }
         if (config.rdma)
-            c->context = redisConnectRdma(ip,port);
+            c->context = redisConnectRdma(ip,port, config.ib_devname);
         else
             c->context = redisConnectNonBlock(ip,port);
     } else {
@@ -1585,6 +1586,8 @@ int parseOptions(int argc, const char **argv) {
         #ifdef USE_RDMA
         } else if (!strcmp(argv[i],"--rdma")) {
             config.rdma = 1;
+        } else if (!strcmp(argv[i],"--ib-devname")) {
+            config.ib_devname = strdup(argv[++i]);
         #endif
         } else {
             /* Assume the user meant to provide an option when the arg starts
@@ -1653,6 +1656,7 @@ usage:
 #endif
 #ifdef USE_RDMA
 " --rdma             Use RDMA as transport protocol.\n"
+" --ib-devname      Manually specify the RDMA device to use.\n"
 #endif
 " --help             Output this help and exit.\n"
 " --version          Output version and exit.\n\n"

@@ -3250,7 +3250,7 @@ void initServer(void) {
     }
 
     if (server.rdma_port != 0 &&
-        listenToRdma(server.rdma_port, &server.rdmafd) == C_ERR) {
+        listenToRdma(server.rdma_port, &server.rdmafd, server.ib_devname) == C_ERR) {
         serverLog(LL_WARNING, "Failed listening on port %u (RDMA): %s, aborting.", server.rdma_port, server.neterr);
         exit(1);
     }

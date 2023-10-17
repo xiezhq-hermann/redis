@@ -2569,6 +2569,8 @@ standardConfig configs[] = {
 
 #ifdef USE_RDMA
     createIntConfig("rdma-port", NULL, MODIFIABLE_CONFIG, 0, 65535, server.rdma_port, 0, INTEGER_CONFIG, NULL, NULL), /* RDMA port. */
+    createStringConfig("rdma-ib-devname", NULL, MODIFIABLE_CONFIG, EMPTY_STRING_IS_NULL, server.ib_devname, NULL, NULL, NULL), /* RDMA port. */
+
 #endif
 
     /* NULL Terminator */

@@ -188,6 +188,7 @@ typedef struct {
             const char *source_addr;
             const char *ip;
             int port;
+            char *ib_devname;
         } tcp;
         /** use this field for unix domain sockets */
         const char *unix_socket;
@@ -218,10 +219,11 @@ typedef struct {
     (opts)->type = REDIS_CONN_UNIX;        \
     (opts)->endpoint.unix_socket = path;
 
-#define REDIS_OPTIONS_SET_RDMA(opts, ip_, port_) \
+#define REDIS_OPTIONS_SET_RDMA(opts, ip_, port_, ib_devname_) \
     (opts)->type = REDIS_CONN_RDMA; \
     (opts)->endpoint.tcp.ip = ip_; \
-    (opts)->endpoint.tcp.port = port_;
+    (opts)->endpoint.tcp.port = port_; \
+    (opts)->endpoint.tcp.ib_devname = ib_devname_;
 
 #define REDIS_OPTIONS_SET_PRIVDATA(opts, data, dtor) \
     (opts)->privdata = data;                         \
@@ -290,8 +292,8 @@ redisContext *redisConnectUnix(const char *path);
 redisContext *redisConnectUnixWithTimeout(const char *path, const struct timeval tv);
 redisContext *redisConnectUnixNonBlock(const char *path);
 redisContext *redisConnectFd(redisFD fd);
-redisContext *redisConnectRdma(const char *ip, int port);
-redisContext *redisConnectRdmaTimeout(const char *ip, int port, const struct timeval tv);
+redisContext *redisConnectRdma(const char *ip, int port, const char *ib_devname);
+redisContext *redisConnectRdmaTimeout(const char *ip, int port, const struct timeval tv, const char *ib_devname);
 /**
  * Reconnect the given context using the saved information.
  *

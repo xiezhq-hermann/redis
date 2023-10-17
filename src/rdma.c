@@ -54,8 +54,14 @@ static void serverNetError(char *err, const char *fmt, ...)
 
 #define MIN(a, b) (a) < (b) ? a : b
 #define REDIS_MAX_SGE 128
-#define REDIS_RDMA_SERVER_RX_SIZE 1024
-#define REDIS_RDMA_SERVER_TX_SIZE 8192
+#define REDIS_RDMA_SERVER_RX_SIZE 9000
+#define REDIS_RDMA_SERVER_TX_SIZE 9000
+// todo, have a look up table for different redis message size
+// #define REDIS_RDMA_SERVER_RX_SET_SIZE 1069
+// #define REDIS_RDMA_SERVER_RX_GET_SIZE 36
+// #define REDIS_RDMA_SERVER_TX_ACK_SIZE 5
+// #define REDIS_RDMA_SERVER_TX_GET_SIZE 1033
+
 // #define REDIS_SYNCIO_RES 10
 
 typedef struct rdma_connection
@@ -97,6 +103,29 @@ typedef struct RdmaContext
 static struct rdma_event_channel *listen_channel;
 static struct rdma_cm_id *listen_cmids[CONFIG_BINDADDR_MAX];
 
+// manually specify the ib device
+char ib_devname_server[100];
+static struct ibv_device* find_ib_device(const char *ib_devname)
+{
+    int num_devices;
+    struct ibv_device **dev_list;
+    struct ibv_device *ib_dev = NULL;
+
+    dev_list = ibv_get_device_list(&num_devices);
+    assert(num_devices > 0);
+    for (int i = 0; i < num_devices; i++)
+    {
+        if (strcmp(ibv_get_device_name(dev_list[i]), ib_devname) == 0)
+        {
+            ib_dev = dev_list[i];
+            break;
+        }
+    }
+    assert(ib_dev != NULL);
+    return ib_dev;
+}
+
+
 static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const void *data, size_t data_len)
 {
     struct ibv_send_wr send_wr, *bad_wr;
@@ -124,6 +153,8 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
 
     sge.addr = (uint64_t)addr;
     sge.lkey = ctx->send_mr->lkey;
+
+    // assert(data_len == REDIS_RDMA_SERVER_TX_ACK_SIZE || data_len == REDIS_RDMA_SERVER_TX_GET_SIZE);
     sge.length = data_len;
 
     send_wr.sg_list = &sge;
@@ -141,13 +172,13 @@ static size_t rdmaPostSend(RdmaContext *ctx, struct rdma_cm_id *cm_id, const voi
     return data_len;
 }
 
-static int rdmaPostRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32_t index)
+static int rdmaPostRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32_t index, size_t data_len)
 {
     struct ibv_sge sge;
     struct ibv_recv_wr recv_wr, *bad_wr;
 
     sge.addr = (uint64_t)(ctx->recv_buf + index * REDIS_RDMA_SERVER_RX_SIZE);
-    sge.length = REDIS_RDMA_SERVER_RX_SIZE;
+    sge.length = data_len;
     sge.lkey = ctx->recv_mr->lkey;
 
     recv_wr.wr_id = index;
@@ -205,7 +236,7 @@ static int rdmaSetupIoBuf(RdmaContext *ctx, struct rdma_cm_id *cm_id)
         goto destroy_iobuf;
     }
 
-    access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+    // access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
     length = REDIS_MAX_SGE * REDIS_RDMA_SERVER_RX_SIZE;
     ctx->recv_buf = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ctx->recv_length = length;
@@ -294,7 +325,8 @@ static int connRdmaHandleRecv(RdmaContext *ctx, struct rdma_cm_id *cm_id, uint32
     }
 
     // to replenish the recv buffer
-    return rdmaPostRecv(ctx, cm_id, index);
+    // assert(byte_len == REDIS_RDMA_SERVER_RX_SET_SIZE || byte_len == REDIS_RDMA_SERVER_RX_GET_SIZE);
+    return rdmaPostRecv(ctx, cm_id, index, byte_len);
 }
 
 static int connRdmaHandleCq(rdma_connection *rdma_conn, bool rx)
@@ -453,7 +485,17 @@ static int rdmaCreateResource(RdmaContext *ctx, struct rdma_cm_id *cm_id)
     struct ibv_cq *recv_cq = NULL;
     struct ibv_pd *pd = NULL;
 
-    pd = ibv_alloc_pd(cm_id->verbs);
+    struct ibv_context *ib_ctx = NULL;
+    if (ib_devname_server[0] == 0)
+    {
+        ib_ctx = cm_id->verbs;
+    } else {
+        struct ibv_device *ib_dev = find_ib_device(ib_devname_server);
+        ib_ctx = ibv_open_device(ib_dev);
+        printf("RDMA: using ib device %s\n", ib_devname_server);
+        assert(ib_ctx != NULL);
+    }
+    pd = ibv_alloc_pd(ib_ctx);
     if (!pd)
     {
         serverLog(LL_WARNING, "RDMA: ibv alloc pd failed");
@@ -471,14 +513,14 @@ static int rdmaCreateResource(RdmaContext *ctx, struct rdma_cm_id *cm_id)
 
     // ctx->comp_channel = comp_channel;
 
-    send_cq = ibv_create_cq(cm_id->verbs, REDIS_MAX_SGE, NULL, NULL, 0);
+    send_cq = ibv_create_cq(ib_ctx, REDIS_MAX_SGE, NULL, NULL, 0);
     if (!send_cq)
     {
         serverLog(LL_WARNING, "RDMA: ibv create send cq failed");
         return C_ERR;
     }
 
-    recv_cq = ibv_create_cq(cm_id->verbs, REDIS_MAX_SGE, NULL, NULL, 0);
+    recv_cq = ibv_create_cq(ib_ctx, REDIS_MAX_SGE, NULL, NULL, 0);
     if (!recv_cq)
     {
         serverLog(LL_WARNING, "RDMA: ibv create recv cq failed");
@@ -497,12 +539,25 @@ static int rdmaCreateResource(RdmaContext *ctx, struct rdma_cm_id *cm_id)
     init_attr.send_cq = send_cq;
     init_attr.recv_cq = recv_cq;
     init_attr.srq = NULL;
-    ret = rdma_create_qp(cm_id, pd, &init_attr);
-    if (ret)
+
+    cm_id->qp = ibv_create_qp(pd, &init_attr);
+    if (cm_id->qp == NULL)
+    // ret = rdma_create_qp(cm_id, pd, &init_attr);
+    // if (ret)
     {
         serverLog(LL_WARNING, "RDMA: create qp failed");
         return C_ERR;
     }
+
+    // required by sysb to change the states of qp
+    int flags;
+    struct ibv_qp_attr attr = {0};
+	attr.pkey_index = 0;
+	attr.port_num = 1;
+	attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE;
+	attr.qp_state = IBV_QPS_INIT;
+	flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+	assert (!ibv_modify_qp(cm_id->qp, &attr, flags));
 
     if (rdmaSetupIoBuf(ctx, cm_id))
     {
@@ -530,106 +585,6 @@ static void rdmaReleaseResource(RdmaContext *ctx)
     {
         ibv_dealloc_pd(ctx->pd);
     }
-}
-
-/* free resource during connection close */
-static int rdmaResolveAddr(rdma_connection *rdma_conn, const char *addr, int port, const char *src_addr)
-{
-    struct addrinfo hints, *servinfo = NULL, *p = NULL;
-    struct rdma_event_channel *cm_channel = NULL;
-    struct rdma_cm_id *cm_id = NULL;
-    RdmaContext *ctx = NULL;
-    struct sockaddr_storage saddr;
-    char _port[6]; /* strlen("65535") */
-    int availableAddrs = 0;
-    int ret = C_ERR;
-
-    UNUSED(src_addr);
-    ctx = zcalloc(sizeof(RdmaContext));
-    if (!ctx)
-    {
-        serverLog(LL_WARNING, "RDMA: Out of memory");
-        goto out;
-    }
-
-    ctx->timeEvent = -1;
-    cm_channel = rdma_create_event_channel();
-    if (!cm_channel)
-    {
-        serverLog(LL_WARNING, "RDMA: create event channel failed");
-        goto out;
-    }
-    ctx->cm_channel = cm_channel;
-
-    if (rdma_create_id(cm_channel, &cm_id, (void *)ctx, RDMA_PS_TCP))
-    {
-        serverLog(LL_WARNING, "RDMA: create id failed");
-        goto out;
-    }
-    rdma_conn->cm_id = cm_id;
-
-    if (anetNonBlock(NULL, cm_channel->fd) != C_OK)
-    {
-        serverLog(LL_WARNING, "RDMA: set cm channel fd non-block failed");
-        goto out;
-    }
-
-    snprintf(_port, 6, "%d", port);
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if (getaddrinfo(addr, _port, &hints, &servinfo))
-    {
-        hints.ai_family = AF_INET6;
-        if (getaddrinfo(addr, _port, &hints, &servinfo))
-        {
-            serverLog(LL_WARNING, "RDMA: bad server addr info");
-            goto out;
-        }
-    }
-
-    for (p = servinfo; p != NULL; p = p->ai_next)
-    {
-        if (p->ai_family == PF_INET)
-        {
-            memcpy(&saddr, p->ai_addr, sizeof(struct sockaddr_in));
-            ((struct sockaddr_in *)&saddr)->sin_port = htons(port);
-        }
-        else if (p->ai_family == PF_INET6)
-        {
-            memcpy(&saddr, p->ai_addr, sizeof(struct sockaddr_in6));
-            ((struct sockaddr_in6 *)&saddr)->sin6_port = htons(port);
-        }
-        else
-        {
-            serverLog(LL_WARNING, "RDMA: Unsupported family");
-            goto out;
-        }
-
-        /* resolve addr at most 100ms */
-        if (rdma_resolve_addr(cm_id, NULL, (struct sockaddr *)&saddr, 100))
-        {
-            continue;
-        }
-        availableAddrs++;
-    }
-
-    if (!availableAddrs)
-    {
-        serverLog(LL_WARNING, "RDMA: server addr not available");
-        goto out;
-    }
-
-    ret = C_OK;
-
-out:
-    if (servinfo)
-    {
-        freeaddrinfo(servinfo);
-    }
-
-    return ret;
 }
 
 static void connRdmaClose(connection *conn)
@@ -835,12 +790,16 @@ end:
 }
 
 // here the real server is created
-int listenToRdma(int port, socketFds *sfd)
+int listenToRdma(int port, socketFds *sfd, const char* ib_devname)
 {
     int j, index = 0, ret;
     char **bindaddr = server.bindaddr;
     int bindaddr_count = server.bindaddr_count;
     char *default_bindaddr[2] = {"*", "-::*"};
+
+    memset(ib_devname_server, 0, sizeof(ib_devname_server));
+    if (ib_devname)
+        strncpy(ib_devname_server, ib_devname, sizeof(ib_devname_server) - 1);
 
     assert(server.proto_max_bulk_len <= 512ll * 1024 * 1024);
 
@@ -899,6 +858,9 @@ int listenToRdma(int port, socketFds *sfd)
 
     // serverLog(LL_VERBOSE, "RDMA: server start to listen on %d ports\n", sfd->count);
     sfd->fd[sfd->count] = listen_channel->fd;
+    // todo
+    // int flags = fcntl(listen_channel->fd, F_GETFL, 0);
+    // fcntl(listen_channel->fd, F_SETFL, flags | O_NONBLOCK);
     anetNonBlock(NULL, sfd->fd[sfd->count]);
     anetCloexec(sfd->fd[sfd->count]);
     sfd->count++;
@@ -956,8 +918,8 @@ static int rdmaHandleConnect(char *err, struct rdma_cm_event *ev, char *ip, size
 
     for (int i = 0; i < REDIS_MAX_SGE; i++)
     {
-
-        if (rdmaPostRecv(ctx, cm_id, i) == C_ERR)
+        // size_t data_len = i % 2 ? REDIS_RDMA_SERVER_RX_SET_SIZE : REDIS_RDMA_SERVER_RX_GET_SIZE;
+        if (rdmaPostRecv(ctx, cm_id, i, REDIS_RDMA_SERVER_RX_SIZE) == C_ERR)
         {
             serverLog(LL_WARNING, "RDMA: post recv failed");
             // goto destroy_iobuf;
@@ -1008,7 +970,7 @@ int rdmaAccept(char *err, int s, char *ip, size_t ip_len, int *port, void **priv
         ret = rdmaHandleConnect(err, ev, ip, ip_len, port);
         if (ret == C_OK)
         {
-            RdmaContext *ctx = (RdmaContext *)ev->id->context;
+            // RdmaContext *ctx = (RdmaContext *)ev->id->context;
             *priv = ev->id;
             // todo: magic number as a placeholder for file descriptor
             ret = 0xff;

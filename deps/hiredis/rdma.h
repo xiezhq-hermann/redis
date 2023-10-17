@@ -36,6 +36,6 @@
 #include <stdbool.h>
 
 int connRdmaHandleCq(redisContext *c, bool rx);
-int redisContextConnectRdma(redisContext *c, const char *addr, int port, const struct timeval *timeout);
+int redisContextConnectRdma(redisContext *c, const char *addr, int port, const struct timeval *timeout, const char *ib_devname_);
 
 #endif

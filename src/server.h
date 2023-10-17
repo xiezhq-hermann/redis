@@ -1642,6 +1642,7 @@ struct redisServer {
     int rdma_port;              /* RDMA listening port */
     socketFds rdmafd;           /* RDMA CM file descriptors */
     int rdma_replication;       /* RDMA replication */    
+    char *ib_devname;           /* RDMA device name */
 };
 
 #define MAX_KEYS_BUFFER 256
@@ -1896,7 +1897,7 @@ char *getClientTypeName(int class);
 void flushSlavesOutputBuffers(void);
 void disconnectSlaves(void);
 int listenToPort(int port, socketFds *fds);
-int listenToRdma(int port, socketFds *fds);
+int listenToRdma(int port, socketFds *fds, const char *ib_devname);
 void connRdmaEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask);
 void pauseClients(mstime_t duration, pause_type type);
 void unpauseClients(void);
